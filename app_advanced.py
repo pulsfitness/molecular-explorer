@@ -1,4 +1,5 @@
 
+
 import streamlit as st
 import pandas as pd
 
@@ -11,6 +12,7 @@ from rdkit.Chem import (
 )
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+from rdkit.Chem import rdDepictor
 
 
 # ==========================================
