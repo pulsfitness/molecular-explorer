@@ -1,448 +1,586 @@
 
-
 import streamlit as st
 import pandas as pd
 
 from rdkit import Chem, DataStructs
-from rdkit.Chem import (
-    Descriptors,
-    rdMolDescriptors,
-    Draw,
-    Crippen,
-)
+from rdkit.Chem import Draw, Descriptors, Crippen, Lipinski, rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
-from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
-from rdkit.Chem import rdDepictor
+from rdkit.Chem import rdFingerprintGenerator
 
 
-# ==========================================
-# 1. CONFIGURARE
-# ==========================================
+# ---------------------------------------------------------
+# CONFIGURAREA PAGINII
+# ---------------------------------------------------------
 
 st.set_page_config(
-    page_title="Molecular Scaffold Explorer",
-    page_icon="🧬",
+    page_title="Molecular Explorer",
+    page_icon="🧪",
     layout="wide"
 )
 
-st.markdown("""
-<style>
-    .main-title {
-        font-size: 34px;
-        font-weight: 750;
-        letter-spacing: -1px;
-    }
-    .subtitle {
-        color: #8A94A6;
-        font-size: 15px;
-    }
-    div[data-testid="stMetric"] {
-        background: rgba(120, 130, 150, 0.08);
-        padding: 14px;
-        border-radius: 12px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------
+# IDENTITATEA INSTITUTIONALA
+# Folosim componente Streamlit native pentru ca textul
+# sa fie vizibil si fara HTML sau CSS.
+# ---------------------------------------------------------
 
+st.title("COLEGIUL TEHNIC „ANA ASLAN” CLUJ-NAPOCA")
+st.subheader("Județul Cluj")
+
+st.markdown("---")
+
+st.title("🧪 Molecular Explorer")
 st.markdown(
-    '<div class="main-title">🧬 Molecular Scaffold Explorer</div>',
-    unsafe_allow_html=True
+    "### Platformă experimentală de analiză chimioinformatică"
 )
 
 st.markdown(
-    '<div class="subtitle">Platformă de analiză structurală și comparație moleculară</div>',
-    unsafe_allow_html=True
+    """
+    **Realizat în scop experimental de eleva Apahidean Maria Giulia**  
+    **Sub îndrumarea profesoarei coordonatoare Chicinaș Raluca**  
+    **An școlar: 2026–2027**
+    """
 )
 
-st.divider()
+st.markdown("---")
 
 
-# ==========================================
-# 2. CONFIGURAREA ANALIZEI
-# ==========================================
+# ---------------------------------------------------------
+# FUNCTII PENTRU ANALIZA MOLECULELOR
+# ---------------------------------------------------------
 
-DEFAULT_SMILES = "CNCCOCC(=O)Nc1ccc(Cl)cc1"
+DEFAULT_SMILES = "CNCCOCC(=O)Nc1ccc(cc1)Cl"
 
-PATTERNS = {
-    "Amidă": "[CX3](=O)[NX3]",
-    "Eter": "[OD2]([#6])[#6]",
-    "Amină primară": "[NX3;H2;!$(NC=O)]",
-    "Amină secundară": "[NX3;H1;!$(NC=O)]",
-    "Amină terțiară": "[NX3;H0;!$(NC=O)]",
-    "Inel aromatic": "a1aaaaa1",
+
+def parse_molecule(smiles):
+    """Transforma un sir SMILES intr-o molecula RDKit."""
+    if not smiles or not smiles.strip():
+        return None
+
+    try:
+        return Chem.MolFromSmiles(smiles.strip())
+    except Exception:
+        return None
+
+
+def calculate_descriptors(mol):
+    """Calculeaza descriptorii moleculari principali."""
+    return {
+        "Formula moleculară": rdMolDescriptors.CalcMolFormula(mol),
+        "Masă moleculară (g/mol)": round(Descriptors.MolWt(mol), 3),
+        "LogP": round(Crippen.MolLogP(mol), 3),
+        "TPSA (Å²)": round(rdMolDescriptors.CalcTPSA(mol), 3),
+        "Donori de legături de hidrogen": Lipinski.NumHDonors(mol),
+        "Acceptori de legături de hidrogen": Lipinski.NumHAcceptors(mol),
+        "Legături rotative": rdMolDescriptors.CalcNumRotatableBonds(mol),
+        "Număr de atomi grei": mol.GetNumHeavyAtoms(),
+        "Număr de inele": rdMolDescriptors.CalcNumRings(mol),
+    }
+
+
+# Modele SMARTS orientative pentru identificarea unor grupe.
+# O grupă poate fi identificata de mai multe ori.
+FUNCTIONAL_GROUPS = {
+    "Grupă hidroxil": "[OX2H]",
+    "Grupă carbonil": "[CX3]=[OX1]",
+    "Grupă amidă": "[NX3][CX3](=[OX1])",
+    "Grupă amină": "[NX3;H2,H1,H0;!$(NC=O)]",
+    "Grupă eter": "[OD2]([#6])[#6]",
     "Halogen": "[F,Cl,Br,I]",
-    "Nitril": "[C]#N",
-    "Sulfonamidă": "[SX4](=O)(=O)[NX3]",
-    "Uree": "[NX3][CX3](=O)[NX3]",
-    "Ester": "[CX3](=O)[OX2H0][#6]",
-    "Acid carboxilic": "[CX3](=O)[OX2H1]",
-    "Fenol": "[OX2H][c]",
+    "Inel aromatic": "a1aaaaa1",
+    "Grupă nitril": "[CX2]#N",
 }
 
 
-def parse_smiles(smiles):
-    """Transformă un SMILES într-o moleculă RDKit."""
-    if not smiles or not smiles.strip():
-        return None
-    return Chem.MolFromSmiles(smiles.strip())
+def find_functional_groups(mol):
+    """Returneaza numarul de potriviri pentru fiecare SMARTS."""
+    results = {}
 
-
-def detect_groups(mol):
-    """Identifică motive structurale folosind reguli SMARTS."""
-    found = []
-
-    for name, smarts in PATTERNS.items():
+    for name, smarts in FUNCTIONAL_GROUPS.items():
         pattern = Chem.MolFromSmarts(smarts)
 
-        if pattern and mol.HasSubstructMatch(pattern):
-            found.append(name)
+        if pattern is None:
+            results[name] = 0
+        else:
+            results[name] = len(mol.GetSubstructMatches(pattern))
 
-    return found
+    return results
 
 
 def get_scaffold(mol):
-    """Extrage scaffold-ul Bemis-Murcko."""
+    """Extrage scheletul Bemis-Murcko al moleculei."""
     scaffold = MurckoScaffold.GetScaffoldForMol(mol)
 
-    if scaffold.GetNumAtoms() == 0:
-        return scaffold, "Nu există scaffold ciclic identificabil."
+    if scaffold is None or scaffold.GetNumAtoms() == 0:
+        return None
 
-    return scaffold, Chem.MolToSmiles(scaffold)
-
-
-def get_descriptors(mol):
-    """Calculează descriptorii moleculari."""
-    return {
-        "Masă moleculară (Da)": round(Descriptors.MolWt(mol), 2),
-        "LogP": round(Crippen.MolLogP(mol), 2),
-        "TPSA (Å²)": round(rdMolDescriptors.CalcTPSA(mol), 2),
-        "Donori H": rdMolDescriptors.CalcNumHBD(mol),
-        "Acceptori H": rdMolDescriptors.CalcNumHBA(mol),
-        "Legături rotative": rdMolDescriptors.CalcNumRotatableBonds(mol),
-        "Număr de inele": rdMolDescriptors.CalcNumRings(mol),
-        "Fracție C sp3": round(
-            rdMolDescriptors.CalcFractionCSP3(mol), 3
-        ),
-        "Atomi grei": mol.GetNumHeavyAtoms(),
-    }
+    return scaffold
 
 
-# Amprentă Morgan pentru comparația moleculară
-morgan_generator = GetMorganGenerator(
-    radius=2,
-    fpSize=2048
+def molecule_image(mol, size=(500, 350)):
+    """Genereaza imaginea 2D a moleculei."""
+    mol_copy = Chem.Mol(mol)
+    Chem.rdDepictor.Compute2DCoords(mol_copy)
+    return Draw.MolToImage(mol_copy, size=size)
+
+
+def create_fingerprint(mol):
+    """Genereaza amprenta Morgan pentru comparatie."""
+    generator = rdFingerprintGenerator.GetMorganGenerator(
+        radius=2,
+        fpSize=2048
+    )
+    return generator.GetFingerprint(mol)
+
+
+# ---------------------------------------------------------
+# TAB-URI
+# ---------------------------------------------------------
+
+tab_analysis, tab_comparison, tab_methodology = st.tabs(
+    [
+        "🔬 Analiza moleculei",
+        "⚖️ Comparație moleculară",
+        "📚 Metodologie"
+    ]
 )
 
 
-# ==========================================
-# 3. MENIU
-# ==========================================
+# =========================================================
+# TAB 1 - ANALIZA MOLECULEI
+# =========================================================
 
-tab1, tab2, tab3 = st.tabs([
-    "🧪 Analiză moleculară",
-    "🔬 Comparație moleculară",
-    "📘 Metodologie"
-])
-
-
-# ==========================================
-# 4. ANALIZA UNEI MOLECULE
-# ==========================================
-
-with tab1:
+with tab_analysis:
 
     st.header("Analiza structurii moleculare")
 
-    smiles = st.text_area(
-        "Introdu structura SMILES:",
+    smiles = st.text_input(
+        "Introdu secvența SMILES:",
         value=DEFAULT_SMILES,
-        height=90
+        help="SMILES reprezintă o modalitate textuală de descriere a structurii chimice."
     )
 
-    analyze = st.button(
-        "🔍 ANALIZEAZĂ MOLECULA",
-        type="primary",
-        key="analyze"
-    )
-
-    if analyze:
-
-        mol = parse_smiles(smiles)
+    if st.button("Analizează molecula", type="primary"):
+        mol = parse_molecule(smiles)
 
         if mol is None:
-            st.error("SMILES invalid. Verifică structura introdusă.")
-
+            st.error(
+                "Secvența SMILES nu este validă. "
+                "Verifică textul introdus și încearcă din nou."
+            )
         else:
+            st.session_state["current_smiles"] = smiles
+            st.session_state["analysis_done"] = True
 
-            canonical = Chem.MolToSmiles(mol)
-            scaffold, scaffold_smiles = get_scaffold(mol)
-            descriptors = get_descriptors(mol)
-            groups = detect_groups(mol)
+    # Afisam analiza dupa apasarea butonului.
+    if st.session_state.get("analysis_done", False):
 
-            st.success("Analiza structurală a fost realizată cu succes.")
+        active_smiles = st.session_state.get(
+            "current_smiles",
+            DEFAULT_SMILES
+        )
+        mol = parse_molecule(active_smiles)
 
-            st.subheader("1. Reprezentarea moleculară")
+        if mol is not None:
 
-            col1, col2 = st.columns(2)
+            st.success("Molecula a fost identificată cu succes.")
+
+            col1, col2 = st.columns([1, 1])
 
             with col1:
+                st.subheader("Structura 2D")
                 st.image(
-                    Draw.MolToImage(mol, size=(600, 400)),
-                    caption="Structura moleculară 2D",
+                    molecule_image(mol),
+                    caption="Reprezentarea bidimensională a moleculei",
                     use_container_width=True
                 )
 
             with col2:
-                st.markdown("**SMILES canonic**")
-                st.code(canonical)
+                st.subheader("Informații generale")
 
-                st.markdown("**Scaffold Bemis–Murcko**")
-                st.code(scaffold_smiles)
-
-                if scaffold.GetNumAtoms() > 0:
-                    st.image(
-                        Draw.MolToImage(scaffold, size=(500, 350)),
-                        caption="Scheletul molecular extras",
-                        use_container_width=True
-                    )
-
-            st.divider()
-
-            st.subheader("2. Proprietăți fizico-chimice")
-
-            metric_columns = st.columns(3)
-
-            for i, (name, value) in enumerate(descriptors.items()):
-                metric_columns[i % 3].metric(name, value)
-
-            st.divider()
-
-            st.subheader("3. Grupări funcționale")
-
-            if groups:
-                group_columns = st.columns(3)
-
-                for i, group in enumerate(groups):
-                    group_columns[i % 3].success("✓ " + group)
-            else:
-                st.warning(
-                    "Nu au fost detectate motive din lista de reguli implementate."
+                canonical_smiles = Chem.MolToSmiles(
+                    mol,
+                    canonical=True
                 )
 
-            st.divider()
+                st.write("**SMILES canonic:**")
+                st.code(canonical_smiles)
 
-            st.subheader("4. Raportul analizei")
+                st.write("**Număr de atomi:**", mol.GetNumAtoms())
+                st.write(
+                    "**Număr de atomi grei:**",
+                    mol.GetNumHeavyAtoms()
+                )
 
-            report = pd.DataFrame(
+                st.write(
+                    "**Număr de legături:**",
+                    mol.GetNumBonds()
+                )
+
+            st.markdown("---")
+
+            # DESCRIPTORI
+            st.subheader("Descriptorii moleculari")
+
+            descriptors = calculate_descriptors(mol)
+
+            descriptor_df = pd.DataFrame(
                 list(descriptors.items()),
-                columns=["Parametru", "Valoare"]
+                columns=["Descriptor", "Valoare"]
             )
 
-            report.loc[len(report)] = [
-                "SMILES canonic", canonical
-            ]
+            st.dataframe(
+                descriptor_df,
+                use_container_width=True,
+                hide_index=True
+            )
 
-            report.loc[len(report)] = [
-                "Scaffold Bemis–Murcko", scaffold_smiles
-            ]
-
-            report.loc[len(report)] = [
-                "Grupări detectate", ", ".join(groups)
-            ]
+            csv_descriptors = descriptor_df.to_csv(
+                index=False
+            ).encode("utf-8-sig")
 
             st.download_button(
-                "⬇️ Descarcă raportul CSV",
-                data=report.to_csv(
-                    index=False
-                ).encode("utf-8-sig"),
-                file_name="raport_molecular.csv",
+                label="Descarcă descriptorii în format CSV",
+                data=csv_descriptors,
+                file_name="descriptorii_moleculei.csv",
                 mime="text/csv"
             )
 
+            st.markdown("---")
 
-# ==========================================
-# 5. COMPARAȚIE MOLECULARĂ
-# ==========================================
+            # GRUPE FUNCTIONALE
+            st.subheader("Identificarea grupelor funcționale")
 
-with tab2:
+            functional_groups = find_functional_groups(mol)
 
-    st.header("Comparație între două molecule")
+            groups_df = pd.DataFrame(
+                [
+                    {
+                        "Grupă funcțională": name,
+                        "Număr de apariții": count
+                    }
+                    for name, count in functional_groups.items()
+                ]
+            )
+
+            st.dataframe(
+                groups_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.caption(
+                "Identificarea se bazează pe tipare SMARTS. "
+                "Rezultatele sunt orientative și depind de regulile utilizate."
+            )
+
+            st.markdown("---")
+
+            # SCAFFOLD
+            st.subheader("Scheletul molecular Bemis–Murcko")
+
+            scaffold = get_scaffold(mol)
+
+            if scaffold is not None:
+
+                scaffold_col1, scaffold_col2 = st.columns(2)
+
+                with scaffold_col1:
+                    st.image(
+                        molecule_image(scaffold, size=(400, 300)),
+                        caption="Schelet molecular Bemis–Murcko",
+                        use_container_width=True
+                    )
+
+                with scaffold_col2:
+                    scaffold_smiles = Chem.MolToSmiles(scaffold)
+
+                    st.write("**SMILES al scheletului:**")
+                    st.code(scaffold_smiles)
+
+                    st.write(
+                        "**Număr de atomi în schelet:**",
+                        scaffold.GetNumAtoms()
+                    )
+
+                    st.write(
+                        "**Număr de inele în schelet:**",
+                        rdMolDescriptors.CalcNumRings(scaffold)
+                    )
+
+            else:
+                st.info(
+                    "Nu a fost identificat un schelet Bemis–Murcko "
+                    "nevid pentru această moleculă."
+                )
+
+
+# =========================================================
+# TAB 2 - COMPARATIE MOLECULARA
+# =========================================================
+
+with tab_comparison:
+
+    st.header("Comparația dintre două molecule")
 
     st.write(
-        "Compară două structuri moleculare folosind "
-        "amprente Morgan și coeficientul de similaritate Tanimoto."
+        "Introdu două secvențe SMILES pentru a compara "
+        "descriptorii moleculari și amprentele Morgan."
     )
 
-    col1, col2 = st.columns(2)
+    col_a, col_b = st.columns(2)
 
-    with col1:
-        smiles_a = st.text_area(
-            "Molecula A",
+    with col_a:
+        smiles_a = st.text_input(
+            "SMILES pentru molecula A:",
             value=DEFAULT_SMILES,
-            height=100
+            key="comparison_a"
         )
 
-    with col2:
-        smiles_b = st.text_area(
-            "Molecula B",
-            value="CC(=O)NC1=CC=C(O)C=C1",
-            height=100
+    with col_b:
+        smiles_b = st.text_input(
+            "SMILES pentru molecula B:",
+            value="CNCCOCC(=O)Nc1ccc(cc1)Br",
+            key="comparison_b"
         )
 
-    compare = st.button(
-        "⚖️ COMPARĂ MOLECULELE",
-        type="primary",
-        key="compare"
-    )
+    if st.button("Compară moleculele", type="primary"):
 
-    if compare:
-
-        mol_a = parse_smiles(smiles_a)
-        mol_b = parse_smiles(smiles_b)
+        mol_a = parse_molecule(smiles_a)
+        mol_b = parse_molecule(smiles_b)
 
         if mol_a is None or mol_b is None:
-
-            st.error("Una sau ambele structuri SMILES sunt invalide.")
+            st.error(
+                "Una sau ambele secvențe SMILES nu sunt valide."
+            )
 
         else:
+            st.success("Ambele molecule au fost procesate.")
 
-            fp_a = morgan_generator.GetFingerprint(mol_a)
-            fp_b = morgan_generator.GetFingerprint(mol_b)
+            image_a, image_b = st.columns(2)
+
+            with image_a:
+                st.subheader("Molecula A")
+                st.image(
+                    molecule_image(mol_a, size=(400, 300)),
+                    use_container_width=True
+                )
+                st.code(Chem.MolToSmiles(mol_a))
+
+            with image_b:
+                st.subheader("Molecula B")
+                st.image(
+                    molecule_image(mol_b, size=(400, 300)),
+                    use_container_width=True
+                )
+                st.code(Chem.MolToSmiles(mol_b))
+
+            st.markdown("---")
+
+            # SIMILARITATE TANIMOTO
+            fingerprint_a = create_fingerprint(mol_a)
+            fingerprint_b = create_fingerprint(mol_b)
 
             similarity = DataStructs.TanimotoSimilarity(
-                fp_a, fp_b
+                fingerprint_a,
+                fingerprint_b
             )
 
-            st.success("Comparația a fost finalizată.")
+            st.subheader("Similaritatea structurală")
 
             st.metric(
-                "Similaritate structurală Tanimoto",
-                f"{similarity * 100:.2f}%"
+                label="Similaritate Tanimoto",
+                value=f"{similarity * 100:.2f}%"
             )
 
-            st.progress(similarity)
+            st.progress(float(similarity))
 
-            col1, col2 = st.columns(2)
+            st.caption(
+                "Valoarea Tanimoto compară amprentele moleculare Morgan "
+                "cu raza 2 și 2048 de biți. Nu reprezintă o măsură "
+                "directă a similarității activității biologice."
+            )
 
-            with col1:
-                st.markdown("**Molecula A**")
-                st.image(
-                    Draw.MolToImage(mol_a, size=(450, 300)),
-                    use_container_width=True
+            st.markdown("---")
+
+            # COMPARATIE DESCRIPTORI
+            st.subheader("Comparația descriptorilor")
+
+            desc_a = calculate_descriptors(mol_a)
+            desc_b = calculate_descriptors(mol_b)
+
+            comparison_data = []
+
+            for descriptor in desc_a:
+                comparison_data.append(
+                    {
+                        "Descriptor": descriptor,
+                        "Molecula A": desc_a[descriptor],
+                        "Molecula B": desc_b[descriptor]
+                    }
                 )
 
-            with col2:
-                st.markdown("**Molecula B**")
-                st.image(
-                    Draw.MolToImage(mol_b, size=(450, 300)),
-                    use_container_width=True
-                )
+            comparison_df = pd.DataFrame(comparison_data)
 
-            st.subheader("Interpretarea comparației")
-
-            st.write(
-                f"Coeficientul Tanimoto calculat este "
-                f"{similarity:.4f}, utilizând amprente Morgan "
-                f"cu raza 2 și 2048 de biți."
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                hide_index=True
             )
 
-            st.info(
-                "Similaritatea structurală nu demonstrează "
-                "că moleculele au aceeași activitate biologică, "
-                "aceeași toxicitate sau același mecanism de acțiune."
-            )
-
-            comparison_report = pd.DataFrame({
-                "Parametru": [
-                    "SMILES molecula A",
-                    "SMILES molecula B",
-                    "Metodă",
-                    "Rază Morgan",
-                    "Dimensiune amprentă",
-                    "Similaritate Tanimoto"
-                ],
-                "Valoare": [
-                    Chem.MolToSmiles(mol_a),
-                    Chem.MolToSmiles(mol_b),
-                    "Morgan fingerprint",
-                    2,
-                    2048,
-                    round(similarity, 4)
-                ]
-            })
+            csv_comparison = comparison_df.to_csv(
+                index=False
+            ).encode("utf-8-sig")
 
             st.download_button(
-                "⬇️ Descarcă raportul comparației",
-                data=comparison_report.to_csv(
-                    index=False
-                ).encode("utf-8-sig"),
+                label="Descarcă comparația în format CSV",
+                data=csv_comparison,
                 file_name="comparatie_moleculara.csv",
                 mime="text/csv"
             )
 
 
-# ==========================================
-# 6. METODOLOGIE
-# ==========================================
+# =========================================================
+# TAB 3 - METODOLOGIE
+# =========================================================
 
-with tab3:
+with tab_methodology:
 
-    st.header("Metodologia algoritmului")
+    st.header("Metodologia proiectului")
 
-    st.markdown("""
-    ### Biblioteci utilizate
+    st.subheader("1. Scopul aplicației")
 
-    - **RDKit:** procesarea și analiza structurilor chimice.
-    - **Streamlit:** interfața grafică.
-    - **Pandas:** organizarea și exportul rezultatelor.
+    st.write(
+        """
+        Molecular Explorer este o aplicație experimentală de
+        chimioinformatică, concepută pentru explorarea structurilor
+        moleculare și calcularea unor proprietăți fizico-chimice.
+        """
+    )
 
-    ### Metode computaționale
+    st.subheader("2. Reprezentarea SMILES")
 
-    **1. Reprezentarea moleculară**
+    st.write(
+        """
+        SMILES (Simplified Molecular Input Line Entry System) este
+        o notație textuală utilizată pentru reprezentarea structurilor
+        chimice. Aplicația utilizează biblioteca RDKit pentru
+        interpretarea și procesarea acestor secvențe.
+        """
+    )
 
-    Structurile SMILES sunt transformate în obiecte moleculare
-    pentru analiza ulterioară.
+    st.subheader("3. Descriptorii moleculari")
 
-    **2. Descriptori moleculari**
+    st.write(
+        """
+        Descriptorii moleculari sunt valori calculate pornind de la
+        structura unei molecule. În aplicație sunt utilizați:
+        """
+    )
 
-    Sunt calculați parametri precum masa moleculară, LogP,
-    TPSA și numărul donorilor și acceptorilor de hidrogen.
+    st.markdown(
+        """
+        - Formula moleculară;
+        - Masa moleculară;
+        - LogP, descriptor asociat lipofilicității;
+        - TPSA, suprafața polară topologică;
+        - Numărul donorilor și acceptorilor de legături de hidrogen;
+        - Numărul legăturilor rotative;
+        - Numărul atomilor grei și al inelelor.
+        """
+    )
 
-    **3. Extragerea scaffold-ului**
+    st.subheader("4. Grupele funcționale")
 
-    Se utilizează metoda Bemis–Murcko pentru identificarea
-    scheletului molecular.
+    st.write(
+        """
+        Grupele funcționale sunt identificate prin intermediul
+        unor tipare SMARTS. Acestea permit căutarea unor fragmente
+        structurale specifice în moleculă.
+        """
+    )
 
-    **4. Detectarea grupărilor funcționale**
+    st.subheader("5. Scheletul Bemis–Murcko")
 
-    Se utilizează reguli SMARTS pentru recunoașterea
-    unor motive structurale.
+    st.write(
+        """
+        Scheletul Bemis–Murcko reprezintă o modalitate de descriere
+        a nucleului structural al unei molecule, prin păstrarea
+        sistemelor ciclice și a legăturilor dintre acestea.
+        """
+    )
 
-    **5. Similaritatea moleculară**
+    st.subheader("6. Amprentele Morgan și similaritatea Tanimoto")
 
-    Se utilizează amprente Morgan și coeficientul Tanimoto:
+    st.write(
+        """
+        Amprentele Morgan codifică informații despre mediile
+        atomice locale. Similaritatea Tanimoto este calculată
+        folosind formula:
+        """
+    )
 
-    Tanimoto(A,B) = c / (a + b - c)
+    st.latex(
+        r"T(A,B)=\\frac{|A\\cap B|}{|A\\cup B|}"
+    )
 
-    unde a și b reprezintă numărul biților activi în fiecare
-    amprentă, iar c reprezintă numărul biților comuni.
-    """)
+    st.write(
+        """
+        În această formulă, A și B reprezintă mulțimile de biți
+        activați din cele două amprente moleculare.
+        """
+    )
+
+    st.subheader("7. Limitări")
 
     st.warning(
-        "Metodele oferă rezultate computaționale exploratorii. "
-        "Identificarea motivelor structurale și interpretarea "
-        "chimică necesită verificare. Similaritatea nu reprezintă "
-        "dovada activității biologice."
+        """
+        Rezultatele sunt obținute prin calcule informatice și
+        nu reprezintă măsurători experimentale. Similaritatea
+        structurală nu demonstrează automat o activitate biologică
+        asemănătoare. Identificarea grupelor funcționale depinde
+        de tiparele SMARTS definite în program.
+        """
+    )
+
+    st.subheader("8. Instrumente software")
+
+    st.markdown(
+        """
+        - **Python** – limbajul de programare;
+        - **Streamlit** – interfața web;
+        - **RDKit** – procesarea structurilor moleculare;
+        - **Pandas** – organizarea și exportul datelor.
+        """
+    )
+
+    st.subheader("9. Bibliografie orientativă")
+
+    st.markdown(
+        """
+        1. RDKit Documentation – https://www.rdkit.org/docs/
+        2. Streamlit Documentation – https://docs.streamlit.io/
+        3. Bemis, G. W.; Murcko, M. A. The Properties of Known Drugs.
+           5. Molecular Frameworks. Journal of Medicinal Chemistry, 1996.
+        4. Rogers, D.; Hahn, M. Extended-Connectivity Fingerprints.
+           Journal of Chemical Information and Modeling, 2010.
+        """
     )
 
 
-# ==========================================
-# 7. SUBSOL
-# ==========================================
+# ---------------------------------------------------------
+# SUBSOL
+# ---------------------------------------------------------
 
-st.divider()
+st.markdown("---")
 
-st.caption(
-    "Molecular Scaffold Explorer | Instrument educațional "
-    "de chimioinformatică | Analiză realizată cu RDKit"
+st.markdown(
+    """
+    **COLEGIUL TEHNIC „ANA ASLAN” CLUJ-NAPOCA**  
+    Județul Cluj
+
+    Realizat în scop experimental de eleva **Apahidean Maria Giulia**  
+    Sub îndrumarea profesoarei coordonatoare **Chicinaș Raluca**  
+    An școlar **2026–2027**
+    """
 )
